@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>BarberTimbre</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  /* ── RESET & BASE ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --gold:   #c9a84c;
+    --gold2:  #e8c96a;
+    --dark:   #0f0f0f;
+    --dark2:  #161616;
+    --dark3:  #1e1e1e;
+    --dark4:  #2a2a2a;
+    --text:   #f0ead6;
+    --muted:  #888;
+    --danger: #c05050;
+    --green:  #4caf77;
+    --radius: 10px;
+  }
+  body { font-family: 'Georgia', serif; background: var(--dark); color: var(--text); min-height: 100vh; }
+  button { cursor: pointer; font-family: inherit; border: none; border-radius: var(--radius); transition: all .15s; }
+  button:active { transform: scale(.97); }
+  input, select {
+    width: 100%; padding: 11px 14px; border-radius: 8px;
+    background: var(--dark3); border: 1px solid var(--dark4);
+    color: var(--text); font-family: inherit; font-size: 14px; outline: none;
+    transition: border-color .2s;
+  }
+  input:focus, select:focus { border-color: var(--gold); }
+  label { display: block; font-size: 11px; color: var(--muted); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 6px; }
+  .card { background: var(--dark3); border: 1px solid var(--dark4); border-radius: var(--radius); padding: 18px; }
+  .btn-gold { background: var(--gold); color: var(--dark); font-weight: bold; font-size: 15px; padding: 13px; width: 100%; border-radius: var(--radius); }
+  .btn-gold:hover { background: var(--gold2); }
+  .btn-ghost { background: transparent; border: 1px solid var(--dark4); color: var(--muted); font-size: 13px; padding: 10px; width: 100%; border-radius: var(--radius); }
+  .btn-ghost:hover { border-color: var(--gold); color: var(--gold); }
+  .section-label { font-size: 11px; color: var(--gold); letter-spacing: 3px; text-transform: uppercase; margin-bottom: 14px; }
+  .tag { display: inline-block; font-size: 11px; padding: 2px 10px; border-radius: 20px; font-weight: bold; }
+  .tag-pending { background: #3a2800; color: var(--gold); }
+  .tag-done    { background: #0d2a1a; color: var(--green); }
+  .fade { animation: fadeIn .3s ease; }
+  @keyframes fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes bellRing { 0%,100%{transform:rotate(0)} 20%{transform:rotate(18deg)} 40%{transform:rotate(-18deg)} 60%{transform:rotate(12deg)} 80%{transform:rotate(-12deg)} }
+  .bell-ring { animation: bellRing .5s ease; }
+  .wrap { max-width: 480px; margin: 0 auto; padding: 0 16px 60px; }
+  .topbar { display:flex; justify-content:space-between; align-items:center; padding: 12px 16px; background: #111; border-bottom: 1px solid #222; position: sticky; top:0; z-index:10; }
+  .topbar-title { font-size: 16px; font-weight: bold; }
+  .error-msg { background: #2a1515; border: 1px solid #c05050; color: #f08080; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-top: 10px; }
+  .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid #444; border-top-color: var(--gold); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-thumb { background: var(--gold); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  ⚙️  CONFIGURACIÓN — reemplazá estos valores con los tuyos
+//  Supabase Dashboard → Settings → API
+// ═══════════════════════════════════════════════════════════════
+const SUPABASE_URL  = 'https://wblpjniidzwxuqmeiaza.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndibHBqbmlpZHp3eHVxbWVpYXphIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc2NTE5NTQsImV4cCI6MjA5MzIyNzk1NH0._LX65_fIk1IJRXhfDb11WZsGf22skSRShYVOIrqyWkU';
+// ═══════════════════════════════════════════════════════════════
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+// ── Utilidades DOM ────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const render = html => { document.getElementById('root').innerHTML = html; }
+
+// ── Estado global ─────────────────────────────────────────────
+let state = {
+  screen: 'splash',       // splash | clientList | clientAuth | catalog | admin | adminLogin
+  clientes: [],
+  productos: [],
+  pedidos: [],
+  clienteActivo: null,    // objeto cliente autenticado
+  authChallenge: null,    // { campo, label }
+  adminUser: null,        // usuario Supabase auth
+  bellAnim: false,
+  loading: false,
+  error: '',
+};
+
+// ── Reto de autenticación aleatorio ──────────────────────────
+const RETOS = [
+  { campo: 'telefono',  label: 'los últimos 4 dígitos de tu teléfono', fn: v => v.slice(-4) },
+  { campo: 'direccion', label: 'tu dirección completa',                fn: v => v.trim().toLowerCase() },
+  { campo: 'contacto',  label: 'el nombre de tu contacto',             fn: v => v.trim().toLowerCase() },
+];
+
+function generarReto() {
+  return RETOS[Math.floor(Math.random() * RETOS.length)];
+}
+
+// ── Formato de moneda ─────────────────────────────────────────
+function fmt(n) { return '$' + Number(n).toLocaleString('es-CO'); }
+
+// ── FETCH helpers ─────────────────────────────────────────────
+async function loadClientes() {
+  const { data, error } = await sb.from('clientes').select('*').eq('activo', true).order('cliente');
+  if (!error) state.clientes = data;
+}
+async function loadProductos() {
+  const { data, error } = await sb.from('productos').select('*').eq('activo', true).order('articulo');
+  if (!error) state.productos = data;
+}
+async function loadPedidos() {
+  const { data, error } = await sb
+    .from('pedidos')
+    .select('*, clientes(cliente, direccion, telefono), productos(articulo, valor)')
+    .order('created_at', { ascending: false });
+  if (!error) state.pedidos = data;
+}
+
+// ── Realtime suscripción ──────────────────────────────────────
+function subscribeRealtime() {
+  sb.channel('pedidos-rt')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pedidos' }, async () => {
+      await loadPedidos();
+      state.bellAnim = true;
+      renderScreen();
+      setTimeout(() => { state.bellAnim = false; renderScreen(); }, 700);
+    })
+    .subscribe();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  PANTALLAS
+// ════════════════════════════════════════════════════════════════
+
+// 1. SPLASH ───────────────────────────────────────────────────
+function showSplash() {
+  render(`
+    <div class="wrap" style="text-align:center; padding-top:80px;">
+      <div style="font-size:64px; margin-bottom:16px;">💈</div>
+      <div style="font-size:32px; font-weight:bold; letter-spacing:1px; margin-bottom:8px;">BarberTimbre</div>
+      <div style="font-size:14px; color:var(--muted); margin-bottom:60px;">Productos de barbería a domicilio</div>
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <button class="btn-gold" onclick="goClientList()">🔔 Soy Cliente</button>
+        <button class="btn-ghost" onclick="goAdminLogin()">🪮 Acceso Barbero</button>
+      </div>
+      <div style="margin-top:40px; font-size:11px; color:#333;">BarberTimbre v1.0</div>
+    </div>
+  `);
+}
+
+// 2. LISTA DE CLIENTES ─────────────────────────────────────────
+async function goClientList() {
+  state.screen = 'clientList';
+  state.error = '';
+  render(`<div class="wrap" style="padding-top:40px; text-align:center;"><div class="spinner"></div></div>`);
+  await loadClientes();
+  renderClientList();
+}
+
+function renderClientList() {
+  const items = state.clientes.map(c => `
+    <button onclick="selectCliente('${c.id}')" style="
+      width:100%; text-align:left; padding:16px; margin-bottom:10px;
+      background:var(--dark3); border:1px solid var(--dark4); border-radius:var(--radius);
+      color:var(--text); font-size:15px; display:flex; align-items:center; gap:14px;
+    " class="fade">
+      <div style="width:40px; height:40px; border-radius:50%; background:var(--dark4);
+                  display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0;">
+        👤
+      </div>
+      <div>
+        <div style="font-weight:bold;">${c.cliente}</div>
+        <div style="font-size:12px; color:var(--muted);">📍 ${c.direccion}</div>
+      </div>
+      <div style="margin-left:auto; color:var(--gold); font-size:20px;">›</div>
+    </button>
+  `).join('');
+
+  render(`
+    <div class="topbar">
+      <div class="topbar-title">💈 BarberTimbre</div>
+      <button class="btn-ghost" onclick="showSplash()" style="width:auto; padding:6px 14px; font-size:12px;">Inicio</button>
+    </div>
+    <div class="wrap" style="padding-top:28px;">
+      <div class="section-label">Seleccioná tu nombre</div>
+      ${state.clientes.length === 0
+        ? `<div style="text-align:center; color:var(--muted); padding:60px 0;">No hay clientes registrados aún.</div>`
+        : items}
+    </div>
+  `);
+}
+
+// 3. AUTENTICACIÓN DEL CLIENTE ─────────────────────────────────
+function selectCliente(id) {
+  state.clienteActivo = state.clientes.find(c => c.id === id);
+  state.authChallenge = generarReto();
+  state.error = '';
+  renderClientAuth();
+}
+
+function renderClientAuth() {
+  const c = state.clienteActivo;
+  const ch = state.authChallenge;
+  render(`
+    <div class="topbar">
+      <div class="topbar-title">💈 BarberTimbre</div>
+      <button class="btn-ghost" onclick="renderClientList()" style="width:auto; padding:6px 14px; font-size:12px;">← Volver</button>
+    </div>
+    <div class="wrap fade" style="padding-top:40px;">
+      <div style="text-align:center; margin-bottom:30px;">
+        <div style="font-size:42px; margin-bottom:10px;">🔐</div>
+        <div style="font-size:18px; font-weight:bold; margin-bottom:6px;">Hola, ${c.cliente}</div>
+        <div style="font-size:14px; color:var(--muted);">Confirmemos que sos vos</div>
+      </div>
+      <div class="card" style="margin-bottom:20px;">
+        <div style="font-size:14px; color:var(--gold); text-align:center; margin-bottom:18px; line-height:1.6;">
+          Por favor ingresá<br><strong>${ch.label}</strong>
+        </div>
+        <label>Tu respuesta</label>
+        <input id="authInput" type="text" placeholder="Escribí aquí..."
+               onkeydown="if(event.key==='Enter') verificarAuth()"
+               autocomplete="off" spellcheck="false"/>
+        <div id="authError"></div>
+        <button class="btn-gold" style="margin-top:14px;" onclick="verificarAuth()">Verificar →</button>
+        <button class="btn-ghost" style="margin-top:10px;" onclick="cambiarReto()">🔄 Usar otro dato</button>
+      </div>
+    </div>
+  `);
+  setTimeout(() => { const el = $('authInput'); if(el) el.focus(); }, 100);
+}
+
+function cambiarReto() {
+  // elige un reto diferente al actual
+  const opciones = RETOS.filter(r => r.campo !== state.authChallenge.campo);
+  state.authChallenge = opciones[Math.floor(Math.random() * opciones.length)];
+  state.error = '';
+  renderClientAuth();
+}
+
+function verificarAuth() {
+  const input = $('authInput');
+  if (!input) return;
+  const valor = input.value.trim().toLowerCase();
+  const ch    = state.authChallenge;
+  const real  = ch.fn(state.clienteActivo[ch.campo]);
+
+  if (valor === real) {
+    goCatalog();
+  } else {
+    $('authError').innerHTML = `<div class="error-msg">❌ Dato incorrecto. Intentá de nuevo o usá otro dato.</div>`;
+    input.value = '';
+    input.focus();
+  }
+}
+
+// 4. CATÁLOGO ──────────────────────────────────────────────────
+async function goCatalog() {
+  state.screen = 'catalog';
+  render(`<div class="wrap" style="padding-top:40px; text-align:center;"><div class="spinner"></div></div>`);
+  await loadProductos();
+  renderCatalog();
+}
+
+function renderCatalog() {
+  const items = state.productos.map(p => `
+    <div class="card fade" style="margin-bottom:14px; border-left:3px solid var(--gold);">
+      <div style="display:flex; align-items:center; gap:14px;">
+        <div style="font-size:34px;">🧴</div>
+        <div style="flex:1;">
+          <div style="font-size:16px; font-weight:bold;">${p.articulo}</div>
+          <div style="font-size:15px; color:var(--gold); margin-top:4px; font-weight:bold;">${fmt(p.valor)}</div>
+          <div style="font-size:12px; color:var(--muted);">Disponible: ${p.cantidad} unid.</div>
+        </div>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; margin-top:14px;">
+        <label style="margin:0; white-space:nowrap; font-size:12px; color:var(--muted);">Cantidad:</label>
+        <input id="qty_${p.id}" type="number" min="1" max="${p.cantidad}" value="1"
+               style="width:80px; text-align:center; padding:8px;"/>
+        <button onclick="timbrar('${p.id}')" style="
+          flex:1; padding:11px; background:var(--gold); color:var(--dark);
+          font-weight:bold; font-size:14px; border-radius:8px;">
+          🔔 Timbrar
+        </button>
+      </div>
+    </div>
+  `).join('');
+
+  render(`
+    <div class="topbar">
+      <div class="topbar-title">💈 ${state.clienteActivo.cliente}</div>
+      <button class="btn-ghost" onclick="goClientList()" style="width:auto; padding:6px 14px; font-size:12px;">Salir</button>
+    </div>
+    <div class="wrap" style="padding-top:24px;">
+      <div class="section-label">Catálogo de productos</div>
+      ${state.productos.length === 0
+        ? `<div style="text-align:center; color:var(--muted); padding:60px 0;">No hay productos disponibles.</div>`
+        : items}
+    </div>
+    <div id="toastArea" style="position:fixed; bottom:24px; left:50%; transform:translateX(-50%); z-index:99;"></div>
+  `);
+}
+
+async function timbrar(productoId) {
+  const qtyEl = $('qty_' + productoId);
+  const cantidad = parseInt(qtyEl?.value || 1);
+  const producto = state.productos.find(p => p.id === productoId);
+  if (cantidad < 1 || cantidad > producto.cantidad) {
+    showToast('⚠️ Cantidad inválida', 'error'); return;
+  }
+
+  const btn = qtyEl.parentElement.querySelector('button');
+  btn.disabled = true; btn.textContent = '⏳ Enviando...';
+
+  const { error } = await sb.from('pedidos').insert({
+    cliente_id:  state.clienteActivo.id,
+    producto_id: productoId,
+    cantidad:    cantidad,
+    estado:      'pendiente',
+  });
+
+  if (error) {
+    showToast('❌ Error al timbrar. Intentá de nuevo.', 'error');
+    btn.disabled = false; btn.textContent = '🔔 Timbrar';
+  } else {
+    showToast(`✅ ¡Timbre enviado! El barbero ya lo recibió.`, 'ok');
+    btn.disabled = false; btn.textContent = '🔔 Timbrar';
+  }
+}
+
+function showToast(msg, tipo) {
+  const area = $('toastArea');
+  if (!area) return;
+  const bg = tipo === 'ok' ? '#0d2a1a' : '#2a1515';
+  const border = tipo === 'ok' ? 'var(--green)' : 'var(--danger)';
+  area.innerHTML = `
+    <div style="background:${bg}; border:1px solid ${border}; color:var(--text);
+                padding:12px 22px; border-radius:30px; font-size:14px;
+                box-shadow:0 4px 20px #000a; white-space:nowrap;">
+      ${msg}
+    </div>`;
+  setTimeout(() => { if (area) area.innerHTML = ''; }, 3500);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  PANEL ADMIN
+// ════════════════════════════════════════════════════════════════
+
+// LOGIN ADMIN ──────────────────────────────────────────────────
+function goAdminLogin() {
+  state.error = '';
+  render(`
+    <div class="wrap fade" style="padding-top:80px; text-align:center;">
+      <div style="font-size:40px; margin-bottom:12px;">🪮</div>
+      <div style="font-size:22px; font-weight:bold; margin-bottom:4px;">Panel del Barbero</div>
+      <div style="font-size:13px; color:var(--muted); margin-bottom:36px;">Acceso exclusivo para administrador</div>
+      <div class="card" style="text-align:left;">
+        <div style="margin-bottom:14px;">
+          <label>Correo electrónico</label>
+          <input id="loginEmail" type="email" placeholder="tu@correo.com" autocomplete="username"/>
+        </div>
+        <div style="margin-bottom:18px;">
+          <label>Contraseña</label>
+          <input id="loginPass" type="password" placeholder="••••••••" autocomplete="current-password"
+                 onkeydown="if(event.key==='Enter') doAdminLogin()"/>
+        </div>
+        <div id="loginError"></div>
+        <button class="btn-gold" onclick="doAdminLogin()">Entrar al panel</button>
+        <button class="btn-ghost" style="margin-top:10px;" onclick="showSplash()">← Volver</button>
+      </div>
+    </div>
+  `);
+}
+
+async function doAdminLogin() {
+  const email = $('loginEmail')?.value.trim();
+  const pass  = $('loginPass')?.value;
+  if (!email || !pass) { $('loginError').innerHTML = `<div class="error-msg">Completá todos los campos.</div>`; return; }
+
+  $('loginError').innerHTML = `<div style="text-align:center; padding:8px;"><div class="spinner"></div></div>`;
+  const { data, error } = await sb.auth.signInWithPassword({ email, password: pass });
+
+  if (error) {
+    $('loginError').innerHTML = `<div class="error-msg">❌ Correo o contraseña incorrectos.</div>`;
+  } else {
+    state.adminUser = data.user;
+    await Promise.all([loadClientes(), loadProductos(), loadPedidos()]);
+    subscribeRealtime();
+    renderAdmin('pedidos');
+  }
+}
+
+async function adminLogout() {
+  await sb.auth.signOut();
+  state.adminUser = null;
+  showSplash();
+}
+
+// PANEL ADMIN PRINCIPAL ────────────────────────────────────────
+function renderAdmin(tab = 'pedidos') {
+  const pending = state.pedidos.filter(p => p.estado === 'pendiente');
+  const bell = state.bellAnim ? 'bell-ring' : '';
+
+  render(`
+    <div class="topbar">
+      <div class="topbar-title">💈 BarberTimbre</div>
+      <button class="btn-ghost" onclick="adminLogout()" style="width:auto; padding:6px 14px; font-size:12px; color:var(--danger);">Salir</button>
+    </div>
+
+    <!-- TABS -->
+    <div style="display:flex; background:#111; border-bottom:1px solid #222; padding:0 16px;">
+      ${[
+        { key:'pedidos',   label:'Timbres',   badge: pending.length },
+        { key:'productos', label:'Productos', badge: 0 },
+        { key:'clientes',  label:'Clientes',  badge: 0 },
+      ].map(t => `
+        <button onclick="renderAdmin('${t.key}')" style="
+          flex:1; padding:13px 0; border:none; border-radius:0;
+          background:transparent; font-size:13px; font-family:inherit;
+          color:${tab===t.key ? 'var(--gold)' : 'var(--muted)'};
+          border-bottom:2px solid ${tab===t.key ? 'var(--gold)' : 'transparent'};
+          display:flex; align-items:center; justify-content:center; gap:6px;
+        ">
+          ${t.key==='pedidos' ? `<span class="${bell}" style="display:inline-block;">🔔</span>` : ''}
+          ${t.label}
+          ${t.badge > 0 ? `<span style="background:var(--gold);color:var(--dark);border-radius:10px;font-size:10px;font-weight:bold;padding:1px 7px;">${t.badge}</span>` : ''}
+        </button>
+      `).join('')}
+    </div>
+
+    <div class="wrap" style="padding-top:24px;" id="adminContent">
+      ${tab === 'pedidos'   ? renderPedidos()   : ''}
+      ${tab === 'productos' ? renderProductosAdmin() : ''}
+      ${tab === 'clientes'  ? renderClientesAdmin()  : ''}
+    </div>
+    <div id="toastArea" style="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:99;"></div>
+  `);
+}
+
+// TAB PEDIDOS ──────────────────────────────────────────────────
+function renderPedidos() {
+  const pending = state.pedidos.filter(p => p.estado === 'pendiente');
+  const done    = state.pedidos.filter(p => p.estado === 'entregado');
+
+  const card = (p, isPending) => `
+    <div class="card fade" style="margin-bottom:12px; border-left:3px solid ${isPending ? 'var(--gold)' : '#2a2a2a'}; opacity:${isPending ? 1 : 0.65};">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+        <div>
+          <div style="font-size:15px; font-weight:bold;">🧴 ${p.productos?.articulo || '—'}</div>
+          <div style="font-size:13px; color:var(--gold); margin-top:3px;">
+            ${fmt(p.productos?.valor || 0)} × ${p.cantidad} = ${fmt((p.productos?.valor||0) * p.cantidad)}
+          </div>
+        </div>
+        <span class="tag ${isPending ? 'tag-pending' : 'tag-done'}">${isPending ? 'Pendiente' : 'Entregado'}</span>
+      </div>
+      <div style="background:var(--dark2); border-radius:8px; padding:10px 12px; font-size:13px; line-height:1.8;">
+        <div>👤 <strong>${p.clientes?.cliente || '—'}</strong></div>
+        <div>📍 ${p.clientes?.direccion || '—'}</div>
+        <div>📞 ${p.clientes?.telefono || '—'}</div>
+      </div>
+      <div style="font-size:11px; color:var(--muted); margin-top:8px;">
+        ${new Date(p.created_at).toLocaleString('es-CO',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'})}
+      </div>
+      ${isPending ? `<button onclick="marcarEntregado('${p.id}')" class="btn-gold" style="margin-top:12px; font-size:13px; padding:10px;">✅ Marcar como entregado</button>` : ''}
+    </div>
+  `;
+
+  return `
+    ${pending.length === 0 && done.length === 0
+      ? `<div style="text-align:center;color:var(--muted);padding:60px 0;"><div style="font-size:40px;margin-bottom:12px;">🔕</div>Sin timbres aún</div>`
+      : ''}
+    ${pending.length > 0 ? `<div class="section-label">Pendientes (${pending.length})</div>${pending.map(p=>card(p,true)).join('')}` : ''}
+    ${done.length > 0 ? `<div class="section-label" style="margin-top:20px;">Entregados</div>${done.map(p=>card(p,false)).join('')}` : ''}
+  `;
+}
+
+async function marcarEntregado(id) {
+  const { error } = await sb.from('pedidos').update({ estado:'entregado' }).eq('id', id);
+  if (!error) {
+    await loadPedidos();
+    renderAdmin('pedidos');
+  }
+}
+
+// TAB PRODUCTOS ────────────────────────────────────────────────
+function renderProductosAdmin() {
+  return `
+    <!-- Formulario agregar -->
+    <div class="card" style="margin-bottom:20px;">
+      <div class="section-label">Agregar producto</div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div><label>Artículo</label><input id="pArticulo" placeholder="Nombre del producto"/></div>
+        <div style="display:flex;gap:10px;">
+          <div style="flex:1;"><label>Cantidad</label><input id="pCantidad" type="number" min="0" placeholder="0"/></div>
+          <div style="flex:1;"><label>Valor (COP)</label><input id="pValor" type="number" min="0" placeholder="0"/></div>
+        </div>
+        <button class="btn-gold" style="font-size:13px;padding:11px;" onclick="agregarProducto()">+ Agregar producto</button>
+      </div>
+    </div>
+
+    <!-- Lista -->
+    <div class="section-label">Productos activos (${state.productos.length})</div>
+    ${state.productos.length === 0 ? `<div style="color:var(--muted);text-align:center;padding:30px 0;">Sin productos</div>` : ''}
+    ${state.productos.map(p => `
+      <div class="card fade" style="margin-bottom:10px;display:flex;align-items:center;gap:12px;">
+        <div style="flex:1;">
+          <div style="font-size:15px;font-weight:bold;">${p.articulo}</div>
+          <div style="font-size:13px;color:var(--muted);margin-top:3px;">Cant: ${p.cantidad} · ${fmt(p.valor)}</div>
+        </div>
+        <button onclick="eliminarProducto('${p.id}')" style="
+          padding:7px 14px;background:#2a1515;color:var(--danger);
+          font-size:12px;border-radius:6px;">Eliminar</button>
+      </div>
+    `).join('')}
+  `;
+}
+
+async function agregarProducto() {
+  const articulo  = $('pArticulo')?.value.trim();
+  const cantidad  = parseInt($('pCantidad')?.value || 0);
+  const valor     = parseFloat($('pValor')?.value || 0);
+  if (!articulo) { showToast('⚠️ Escribí el nombre del artículo', 'error'); return; }
+
+  const { error } = await sb.from('productos').insert({ articulo, cantidad, valor });
+  if (!error) {
+    await loadProductos();
+    showToast('✅ Producto agregado', 'ok');
+    renderAdmin('productos');
+  } else {
+    showToast('❌ Error al agregar', 'error');
+  }
+}
+
+async function eliminarProducto(id) {
+  if (!confirm('¿Eliminár este producto?')) return;
+  const { error } = await sb.from('productos').update({ activo: false }).eq('id', id);
+  if (!error) { await loadProductos(); renderAdmin('productos'); }
+}
+
+// TAB CLIENTES ─────────────────────────────────────────────────
+function renderClientesAdmin() {
+  return `
+    <!-- Formulario crear cliente -->
+    <div class="card" style="margin-bottom:20px;">
+      <div class="section-label">Crear cliente</div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div><label>Nombre completo</label><input id="cNombre" placeholder="Juan Pérez"/></div>
+        <div><label>Teléfono</label><input id="cTelefono" type="tel" placeholder="3001234567"/></div>
+        <div><label>Dirección</label><input id="cDireccion" placeholder="Calle 10 #5-20, Bogotá"/></div>
+        <div><label>Contacto de referencia</label><input id="cContacto" placeholder="María (mamá)"/></div>
+        <button class="btn-gold" style="font-size:13px;padding:11px;" onclick="crearCliente()">+ Crear cliente</button>
+      </div>
+    </div>
+
+    <!-- Lista -->
+    <div class="section-label">Clientes registrados (${state.clientes.length})</div>
+    ${state.clientes.length === 0 ? `<div style="color:var(--muted);text-align:center;padding:30px 0;">Sin clientes</div>` : ''}
+    ${state.clientes.map(c => `
+      <div class="card fade" style="margin-bottom:10px;display:flex;align-items:flex-start;gap:12px;">
+        <div style="font-size:28px;padding-top:2px;">👤</div>
+        <div style="flex:1;">
+          <div style="font-size:15px;font-weight:bold;">${c.cliente}</div>
+          <div style="font-size:12px;color:var(--muted);line-height:1.7;margin-top:4px;">
+            📞 ${c.telefono}<br>📍 ${c.direccion}<br>👥 ${c.contacto}
+          </div>
+        </div>
+        <button onclick="eliminarCliente('${c.id}')" style="
+          padding:7px 14px;background:#2a1515;color:var(--danger);
+          font-size:12px;border-radius:6px;flex-shrink:0;">Eliminar</button>
+      </div>
+    `).join('')}
+  `;
+}
+
+async function crearCliente() {
+  const cliente   = $('cNombre')?.value.trim();
+  const telefono  = $('cTelefono')?.value.trim();
+  const direccion = $('cDireccion')?.value.trim();
+  const contacto  = $('cContacto')?.value.trim();
+  if (!cliente || !telefono || !direccion || !contacto) {
+    showToast('⚠️ Completá todos los campos del cliente', 'error'); return;
+  }
+  const { error } = await sb.from('clientes').insert({ cliente, telefono, direccion, contacto });
+  if (!error) {
+    await loadClientes();
+    showToast('✅ Cliente creado', 'ok');
+    renderAdmin('clientes');
+  } else {
+    showToast('❌ Error al crear cliente', 'error');
+  }
+}
+
+async function eliminarCliente(id) {
+  if (!confirm('¿Desactivar este cliente?')) return;
+  const { error } = await sb.from('clientes').update({ activo: false }).eq('id', id);
+  if (!error) { await loadClientes(); renderAdmin('clientes'); }
+}
+
+// ── Pantalla principal según estado auth ──────────────────────
+function renderScreen() {
+  if (state.screen === 'admin') renderAdmin('pedidos');
+}
+
+// ── INIT ───────────────────────────────────────────────────────
+async function init() {
+  // Verificar si ya hay sesión activa
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) {
+    state.adminUser = session.user;
+    await Promise.all([loadClientes(), loadProductos(), loadPedidos()]);
+    subscribeRealtime();
+    renderAdmin('pedidos');
+  } else {
+    showSplash();
+  }
+}
+
+init();
+</script>
+</body>
+</html>
